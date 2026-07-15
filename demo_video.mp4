@@ -1,0 +1,240 @@
+import sys
+import os
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+
+# Append 'src' directory to system path so Python can find imports cleanly
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
+
+from guidance_engine import GuidanceEngine
+
+# Page configuration
+st.set_page_config(
+    page_title="Emotion-Aware AI Advisor",
+    page_icon="🌟",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom styling for confidence progress bars
+def render_custom_progressbar(label, value, color):
+    percent = round(value * 100, 1)
+    st.markdown(f"""
+        <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; font-weight: 500; font-size: 14px;">
+                <span>{label.upper()}</span>
+                <span>{percent}%</span>
+            </div>
+            <div style="background-color: #f0f2f6; border-radius: 5px; height: 12px; width: 100%; overflow: hidden;">
+                <div style="background-color: {color}; width: {percent}%; height: 100%;"></div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+# ==========================================
+# 1. Cached Resource Loading
+# ==========================================
+@st.cache_resource(show_spinner=False)
+def load_guidance_engine():
+    # Instantiates the engine and loads deep learning weights once in memory
+    return GuidanceEngine()
+
+try:
+    with st.spinner("Initializing models and configuration. Please wait..."):
+        engine = load_guidance_engine()
+except Exception as e:
+    st.error(f"Failed to load pipeline resources: {e}")
+    st.stop()
+
+
+# ==========================================
+# 2. Session State Management
+# ==========================================
+if "current_result" not in st.session_state:
+    st.session_state.current_result = None
+
+# Sidebar Interface
+st.sidebar.title("🛠️ Control Panel")
+st.sidebar.markdown("Configure runtime features for the advisor pipeline.")
+
+# AI Toggle (Toggle between Gemini generative answers and fallback templates)
+ai_toggle = st.sidebar.toggle("Use Live Gemini Engine", value=engine.api_available)
+engine.api_available = ai_toggle
+
+if not ai_toggle:
+    st.sidebar.warning("Offline Mode active. System will fall back to static templates.")
+else:
+    st.sidebar.success("Gemini generative model active.")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📈 System Logs")
+log_path = os.path.join("data", "guidance_logs.csv")
+if os.path.exists(log_path):
+    logs_df = pd.read_csv(log_path)
+    st.sidebar.metric("Total Cases Handled", len(logs_df))
+    st.sidebar.info("Logs are successfully recorded in `data/guidance_logs.csv` for continuous offline analysis.")
+else:
+    st.sidebar.metric("Total Cases Handled", 0)
+
+
+# ==========================================
+# 3. Main UI Layout
+# ==========================================
+st.title("🌟 Emotion-Aware AI Guidance System")
+st.markdown("Enter a challenge or problem you are currently facing. The system's neural networks (BERT & BiLSTM) will evaluate your emotional state to tailor the AI guidance.")
+
+# Form controls & inputs
+with st.form("pipeline_form"):
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        field_selection = st.selectbox(
+            "Target Domain", 
+            ["Academic", "Career", "Personal"], 
+            help="Select the category that best represents your issue."
+        )
+        
+    with col2:
+        problem_input = st.text_area(
+            "What challenges are you currently dealing with?", 
+            height=120, 
+            placeholder="Type your situation here..."
+        )
+        
+    submit_btn = st.form_submit_button("Analyze & Generate Guidance")
+
+# Clear session button outside form
+if st.button("Clear Application State"):
+    st.session_state.current_result = None
+    st.rerun()
+
+
+# ==========================================
+# 4. Form Actions & Pipeline Execution
+# ==========================================
+if submit_btn:
+    if not problem_input.strip():
+        st.warning("Please describe your problem or situation before running the pipeline.")
+    else:
+        try:
+            # Run deep learning model pipeline and Gemini generation using cached engine
+            with st.spinner("Analyzing text with BiLSTM & BERT and generating guidance..."):
+                result = engine.execute_pipeline(field_selection, problem_input)
+                st.session_state.current_result = result
+        except Exception as e:
+            st.error(f"An error occurred during execution: {e}")
+
+
+# ==========================================
+# 5. Visualizations & Analytical Tab Panel
+# ==========================================
+if st.session_state.current_result:
+    res = st.session_state.current_result
+    emotions_data = res["emotion_result"]
+    
+    st.markdown("---")
+    
+    # Render Mixed Emotion warning card
+    if emotions_data["is_mixed"]:
+        st.info(f"💡 **Mixed Emotion Detected:** In addition to **{emotions_data['primary_emotion'].upper()}**, there is a strong secondary presence of **{emotions_data['secondary_emotion'].upper()}** (Score >= 15%).")
+
+    # Creating analytical tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "💬 AI Advisor Response", 
+        "📊 Emotion Breakdown", 
+        "⚖️ Model Comparison (BiLSTM vs BERT)", 
+        "⏳ Session History"
+    ])
+
+    # Tab 1: AI Advisor Response
+    with tab1:
+        st.subheader("Guided Recommendation")
+        st.markdown(f"> **Context Category:** *{res['field']}*")
+        st.success(res["guidance_response"])
+
+    # Tab 2: Emotion Breakdown (Progress Bars)
+    with tab2:
+        st.subheader("Detected Emotion Intensities")
+        st.markdown("Ensembled probability distribution across core emotional dimensions.")
+        
+        # Color palettes for UI representation
+        color_map = {
+            "joy": "#2ecc71",      # Emerald Green
+            "sadness": "#3498db",  # Ocean Blue
+            "love": "#e84393",     # Rose Pink
+            "anger": "#e74c3c",    # Crimson Red
+            "fear": "#f1c40f"      # Sun Yellow
+        }
+        
+        cols = st.columns(2)
+        all_scores = emotions_data["all_scores"]
+        
+        # Display custom HTML progress bars
+        for idx, (emotion, val) in enumerate(all_scores.items()):
+            col_target = cols[0] if idx % 2 == 0 else cols[1]
+            with col_target:
+                color = color_map.get(emotion, "#7f8c8d")
+                render_custom_progressbar(emotion, val, color)
+
+    # Tab 3: Model Comparison (Grouped Plotly Bar Chart)
+    with tab3:
+        st.subheader("BiLSTM vs. BERT Model Calibration")
+        st.markdown("Compare the raw prediction outputs of your trained neural networks before final ensembling and pipeline adjustments.")
+        
+        # Create Plotly grouped bar chart
+        categories = list(emotions_data["all_scores"].keys())
+        
+        bilstm_vals = [emotions_data["bilstm_scores"].get(cat, 0) for cat in categories]
+        bert_vals = [emotions_data["bert_scores"].get(cat, 0) for cat in categories]
+        ensemble_vals = [emotions_data["all_scores"].get(cat, 0) for cat in categories]
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            x=categories,
+            y=bilstm_vals,
+            name='BiLSTM Raw Output',
+            marker_color='#5758BB'
+        ))
+        
+        fig.add_trace(go.Bar(
+            x=categories,
+            y=bert_vals,
+            name='BERT (Weighted + Keywords)',
+            marker_color='#FFC312'
+        ))
+
+        fig.add_trace(go.Bar(
+            x=categories,
+            y=ensemble_vals,
+            name='Unified Pipeline Score',
+            marker_color='#12CBC4'
+        ))
+        
+        fig.update_layout(
+            barmode='group',
+            xaxis_title="Emotion Dimension",
+            yaxis_title="Probability Intensity",
+            yaxis=dict(range=[0, 1]),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(t=50, b=50, l=50, r=50),
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Tab 4: Session History
+    with tab4:
+        st.subheader("Recent Runs (This Session)")
+        history = engine.get_history()
+        
+        if history:
+            for i, h_item in enumerate(reversed(history)):
+                with st.expander(f"Case {len(history) - i}: {h_item['timestamp']} - {h_item['field']}"):
+                    st.write(f"**Problem:** {h_item['problem']}")
+                    st.write(f"**Primary Emotion:** {h_item['emotion_result']['primary_emotion'].upper()} ({round(h_item['emotion_result']['primary_confidence']*100, 2)}%)")
+                    st.write(f"**AI Counsel:** {h_item['guidance_response']}")
+        else:
+            st.info("No run logs in the current session yet.")
