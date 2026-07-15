@@ -1,7 +1,0 @@
-streamlit
-pandas
-numpy
-plotly
-python-dotenv
-google-generativeai
-protobuf>=4.25.3,<6.0.0
